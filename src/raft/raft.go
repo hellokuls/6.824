@@ -20,6 +20,8 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
+	"fmt"
 	"math/rand"
 
 	// "math/rand"
@@ -29,6 +31,7 @@ import (
 
 	//	"6.824/labgob"
 
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -73,7 +76,7 @@ type Raft struct {
 	commitIndex int          // 已经提交的日志最大索引
 	lastApplied int          // 已经执行完了日志的最大索引
 
-	nextIndex  []int
+	nextIndexs []int
 	matchIndex []int
 
 	applyChan chan ApplyMsg // 已经执行完了的消息channel
@@ -118,13 +121,13 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.currentTerm)
-	// e.Encode(rf.votedFor)
-	// e.Encode(rf.logs)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
@@ -145,6 +148,19 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logs []logEntries
+	// var logs logEntries{}
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil {
+		fmt.Println("Readpersist error")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.logs = logs
+	}
 
 }
 
@@ -295,7 +311,7 @@ const (
 type AppendEntriesArgs struct {
 	Term         int // leader的任期
 	LeaderId     int // leaderid
-	PrevLogIndex int // nextIndex前一个index
+	PrevLogIndex int // nextIndexs前一个index
 	PreLogTerm   int
 	Logs         []logEntries // 需要添加的日志，如果为空，那么就是心跳操作
 	LeaderCommit int          // leader 已经commit了的log index
@@ -387,6 +403,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	for !ok {
+		// 这里的判断非常重要
 		if rf.killed() {
 			return false
 		}
@@ -414,13 +431,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if reply.Success && reply.Term == rf.currentTerm && *appendNum <= len(rf.peers)/2 {
 			*appendNum++
 		}
-		// args.LogIndex 是logs的最新的索引。rf.nextIndex[server]是server这个服务器的最新下一个索引
-		if rf.nextIndex[server] >= args.LogIndex+1 {
+		// args.LogIndex 是logs的最新的索引。rf.nextIndexs[server]是server这个服务器的最新下一个索引
+		if rf.nextIndexs[server] >= args.LogIndex+1 {
 			rf.mu.Unlock()
 			return ok
 		}
 
-		rf.nextIndex[server] = args.LogIndex + 1
+		rf.nextIndexs[server] = args.LogIndex + 1
 
 		// 如果收到了一半的回应
 		if *appendNum > len(rf.peers)/2 {
@@ -460,7 +477,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.mu.Unlock()
 			return false
 		}
-		rf.nextIndex[server]--
+		rf.nextIndexs[server]-- // 疑问，为什么需要--
 
 		argsNews := &AppendEntriesArgs{
 			Term:         args.Term,
@@ -472,11 +489,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			LogIndex:     args.LogIndex,
 		}
 
-		for rf.nextIndex[server] > 0 {
-			argsNews.PrevLogIndex = rf.nextIndex[server] - 1
+		for rf.nextIndexs[server] > 0 {
+			argsNews.PrevLogIndex = rf.nextIndexs[server] - 1
 
 			if argsNews.PrevLogIndex >= len(rf.logs) {
-				rf.nextIndex[server]--
+				rf.nextIndexs[server]--
 				continue
 			}
 
@@ -484,8 +501,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			break
 		}
 
-		if rf.nextIndex[server] < args.LogIndex+1 {
-			argsNews.Logs = rf.logs[rf.nextIndex[server] : args.LogIndex+1]
+		if rf.nextIndexs[server] < args.LogIndex+1 {
+			argsNews.Logs = rf.logs[rf.nextIndexs[server] : args.LogIndex+1]
 		}
 
 		reply := new(AppendEntriesReply)
@@ -508,7 +525,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			return false
 		}
 
-		rf.nextIndex[server]++
+		rf.nextIndexs[server]++ // 疑问，为什么需要++
 
 		if reply.Term > rf.currentTerm {
 			rf.myStatus = Follower
@@ -528,18 +545,18 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			LeaderCommit: args.LeaderCommit,
 			LogIndex:     args.LogIndex,
 		}
-		for rf.nextIndex[server] > 0 {
-			argsNew.PrevLogIndex = rf.nextIndex[server] - 1
+		for rf.nextIndexs[server] > 0 {
+			argsNew.PrevLogIndex = rf.nextIndexs[server] - 1
 			if argsNew.PrevLogIndex >= len(rf.logs) {
-				rf.nextIndex[server]--
+				rf.nextIndexs[server]--
 				continue
 			}
 			argsNew.PreLogTerm = rf.logs[argsNew.PrevLogIndex].Term
 			break
 		}
 
-		if rf.nextIndex[server] < args.LogIndex+1 {
-			argsNew.Logs = rf.logs[rf.nextIndex[server] : args.LogIndex+1]
+		if rf.nextIndexs[server] < args.LogIndex+1 {
+			argsNew.Logs = rf.logs[rf.nextIndexs[server] : args.LogIndex+1]
 		}
 		reply := new(AppendEntriesReply)
 		go rf.sendAppendEntries(server, argsNew, reply, appendNum)
@@ -586,6 +603,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	for !ok {
+		// 这里的判断非常重要
 		if rf.killed() {
 			return false
 		}
@@ -633,19 +651,21 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		}
 
 		if *votedNum > len(rf.peers)/2 {
+			// 重置投票数
 			*votedNum = 0
-
+			// 如果已经是leader，直接返回
 			if rf.myStatus == Leader {
 				rf.mu.Unlock()
 				return ok
 			}
 			// 投票数过半，当选leader
 			rf.myStatus = Leader
-			// DPrintf("[%d] become leader in term %d", rf.me, rf.currentTerm)
-			rf.nextIndex = make([]int, len(rf.peers))
-			// nextIndex 这个数组指的是每一个节点的日志的下一个索引，所以都是为len(rf.logs) ，而当前的最大索引应该是len(rf.logs) - 1
-			for i, _ := range rf.nextIndex {
-				rf.nextIndex[i] = len(rf.logs)
+			// 创建所有peers的nextIndexs
+			rf.nextIndexs = make([]int, len(rf.peers))
+			// nextIndexs 这个数组指的是每一个节点的日志的下一个索引，所以都是为len(rf.logs) ，而当前的最大索引应该是len(rf.logs) - 1
+			// 将所有的peer的nextindex都设置为当前leader的日志长度
+			for i, _ := range rf.nextIndexs {
+				rf.nextIndexs[i] = len(rf.logs)
 			}
 
 			rf.timer.Reset(HeartBeatTimeout)
@@ -752,7 +772,7 @@ func (rf *Raft) ticker() {
 				rf.votedFor = rf.me
 				rf.voteTimeout = time.Duration(rand.Intn(150)+200) * time.Millisecond
 				rf.timer.Reset(rf.voteTimeout)
-				votedNum := 1 // 获取到的投票数
+				votedNum := 1 // 获取到的投票数，自己投自己一票
 				for i, _ := range rf.peers {
 					if i == rf.me { // 自己就不用请求了
 						continue
@@ -767,30 +787,34 @@ func (rf *Raft) ticker() {
 					go rf.sendRequestVote(i, args, reply, &votedNum)
 				}
 			case Leader:
-
+				// 等于1是包含了自己
 				appendNum := 1
+				// 发起了心跳就更新心跳时间
 				rf.timer.Reset(HeartBeatTimeout)
+				// 对集群中的所有server循环
 				for i, _ := range rf.peers {
-					if i == rf.me { // 自己就不用请求了
+					// 自己就不用请求了
+					if i == rf.me {
 						continue
 					}
+					// 请求参数
 					args := &AppendEntriesArgs{
-						Term:         rf.currentTerm,
-						LeaderId:     rf.me,
-						PrevLogIndex: 0,
+						Term:         rf.currentTerm, // 当前leader的任期
+						LeaderId:     rf.me,          // 当前的leaderid必然是自己
+						PrevLogIndex: 0,              // log中nextIndexs的前一个index
 						PreLogTerm:   0,
-						Logs:         nil,
-						LeaderCommit: rf.commitIndex,
-						LogIndex:     len(rf.logs) - 1,
+						Logs:         nil,              // 如果不携带logs，就是心跳
+						LeaderCommit: rf.commitIndex,   // leader已经commit的index
+						LogIndex:     len(rf.logs) - 1, // 当前leader日志的最大索引
 					}
 
-					// 将 rf.nextIndex 和rf.logs长度同步
-					for rf.nextIndex[i] > 0 {
-						// args.PrevLogIndex 等于 nextIndex的前一个索引
-						args.PrevLogIndex = rf.nextIndex[i] - 1
+					// 将 rf.nextIndexs 和 rf.logs长度同步
+					for rf.nextIndexs[i] > 0 {
+						// args.PrevLogIndex 等于 nextIndexs的前一个索引
+						args.PrevLogIndex = rf.nextIndexs[i] - 1
 
 						if args.PrevLogIndex >= len(rf.logs) {
-							rf.nextIndex[i]--
+							rf.nextIndexs[i]--
 							continue
 						}
 
@@ -799,9 +823,9 @@ func (rf *Raft) ticker() {
 					}
 					// 确认日志是否有新增
 					// DPrintf("args.PrevLogIndex = %d", args.PrevLogIndex)
-					// DPrintf("server[%d] , rf.nextIndex[i] = %d , len(rf.logs) = %d", i, rf.nextIndex[i], len(rf.logs))
-					if rf.nextIndex[i] < len(rf.logs) {
-						args.Logs = rf.logs[rf.nextIndex[i] : args.LogIndex+1]
+					// DPrintf("server[%d] , rf.nextIndexs[i] = %d , len(rf.logs) = %d", i, rf.nextIndexs[i], len(rf.logs))
+					if rf.nextIndexs[i] < len(rf.logs) {
+						args.Logs = rf.logs[rf.nextIndexs[i] : args.LogIndex+1]
 					}
 
 					reply := new(AppendEntriesReply)
@@ -837,7 +861,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.nextIndex = nil
+	rf.nextIndexs = nil
 	rf.matchIndex = nil
 	rf.logs = []logEntries{{0, nil}}
 	rf.myStatus = Follower
