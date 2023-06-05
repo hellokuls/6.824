@@ -505,7 +505,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			//	rf.commitIndex = rf.lastApplied
 			//}
 			if args.LogIndex > rf.commitIndex {
-				rf.commitIndex = args.LogIndex
+				if args.LogIndex > len(rf.logs)-1 {
+					rf.commitIndex = len(rf.logs) - 1
+				} else {
+					rf.commitIndex = args.LogIndex
+				}
 				rf.applyCond.Broadcast()
 			}
 		}
@@ -573,7 +577,6 @@ func (rf *Raft) applier() {
 			rf.mu.Unlock()
 			rf.applyChan <- applyMsg
 			rf.mu.Lock()
-			//rf.commitIndex = rf.lastApplied
 		} else {
 			rf.applyCond.Wait()
 		}

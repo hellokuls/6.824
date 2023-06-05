@@ -57,25 +57,29 @@ type IndexandTerm struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
 	req := &Op{OpType: "Get", Key: args.Key, Value: "", SeqId: args.SeqId, ClientId: args.ClientId}
 	reply.Err, reply.Value = kv.clientRequestHandler(*req)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	//log.Printf("PutAppend in  [ClientId: %v] [Seq: %v]", args.ClientId, args.SeqId)
 	req := &Op{OpType: args.Op, Key: args.Key, Value: args.Value, SeqId: args.SeqId, ClientId: args.ClientId}
 	reply.Err, _ = kv.clientRequestHandler(*req)
+	//log.Printf("PutAppend out  [ClientId: %v] [Seq: %v]", args.ClientId, args.SeqId)
 }
 
 func (kv *KVServer) clientRequestHandler(cmd Op) (Err, string) {
+	//log.Printf("1111111111111  [ClientId: %v] [Seq: %v]  kv.mu.Lock() == %v  kv.me == %v", cmd.ClientId, cmd.SeqId, kv.mu, kv.me)
+
 	kv.mu.Lock()
 	// put 请求不允许进行重复提交，会导致一系列问题
 	if cmd.OpType != "Get" && kv.isDupliceRequest(cmd) {
+		kv.mu.Unlock()
 		return OK, "" // 此处应该返回上一次的结果
 	}
 	kv.mu.Unlock()
 	// 调用 start 函数来调用 rf 集群，此时会返回是否为 leader，如果不是则返回
+
 	index, term, leader := kv.rf.Start(cmd)
 	if !leader {
 		return ErrWrongLeader, ""
@@ -96,8 +100,6 @@ func (kv *KVServer) clientRequestHandler(cmd Op) (Err, string) {
 		delete(kv.indexMap, *indexTerm)
 		kv.mu.Unlock()
 	}()
-
-	//log.Printf("[ClientId:%v] [%v] 5", cmd.ClientId, cmd.SeqId)
 	select {
 	case response := <-ch:
 		return response.Err, response.Value
@@ -217,7 +219,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 10000)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.seqMap = make(map[int64]int64)
 	kv.kvStore = make(map[string]string)
